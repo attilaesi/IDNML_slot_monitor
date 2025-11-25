@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "IDNML Slot Monitor",
+  "version": "3.0",
+  "description": "Monitors Google Publisher Tag ad slots on a webpage.",
+  "permissions": ["scripting", "activeTab", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "content_scripts": [
+    {
+       "matches": [
+      "https://www.independent.co.uk/*",
+      "https://www.standard.co.uk/*",
+      "https://www.buzzfeed.com/uk/*",
+      "https://www.huffingtonpost.co.uk/*",
+      "https://*.brightsites.co.uk/*",
+      "https://*.independent.co.uk/*",
+      "https://*.the-independent.com/*",
+      "https://www.indy100.com/*",
+      "https://www.buzzfeed.com/*",
+      "https://stage.buzzfeed.com/*",
+      "https://staging.www.huffpost.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
