@@ -1,13 +1,84 @@
 (function() {
     // Track page load origin (navigationStart or timeOrigin)
     const pageLoadOrigin = performance.timeOrigin || performance.timing.navigationStart;
-    let gptInitAbsolute = null;
-    let gptInitRelative = null;
+    const nowAbs = () => pageLoadOrigin + performance.now();
+
+    // GAM measures from dlt, which equals the browser's domLoading (first byte of the HTML)
+    function sinceDlt(absTime) {
+        const dlt = performance.timing.domLoading || performance.timing.responseStart;
+        return Math.round(absTime - dlt);
+    }
+
+    // Ad lifecycle stages shown per slot, in order
+    const STAGES = ['fetched', 'ad_response', 'rendering', 'rendered', 'viewed'];
+
+    // Everything the side panel shows. Slot status values: missing = not yet, 'Refreshed', or the text to show
+    const slots = {};
+    const slotOrder = [];
+    let gptLoaded = false;
+
+    // Absolute times (ms since epoch) of the page-level milestones
+    const milestones = { firstRequest: null, tcfReady: null, tcfStatus: null, tcfApprox: false };
+
+    // 1) Send a snapshot to content.js, which relays it to the side panel (batched to one per 100ms)
+    let publishTimer = null;
+    function publish() {
+        if (publishTimer) return;
+        publishTimer = setTimeout(() => {
+            publishTimer = null;
+            window.postMessage({ source: 'idnml-monitor', state: snapshot() }, '*');
+        }, 100);
+    }
+
+    function snapshot() {
+        const timings = { tcfReady: null, tcfApprox: milestones.tcfApprox, tcfStatus: milestones.tcfStatus, tagLoaded: null, firstRequest: null };
+        if (milestones.tcfReady) timings.tcfReady = sinceDlt(milestones.tcfReady);
+        if (milestones.firstRequest) timings.firstRequest = sinceDlt(milestones.firstRequest);
+        // idt: when GPT's main library finished loading
+        const impl = performance.getEntriesByType('resource').find(e => e.name.includes('pubads_impl'));
+        if (impl) timings.tagLoaded = sinceDlt(pageLoadOrigin + impl.responseEnd);
+        return { url: location.href, gptLoaded, slots: slotOrder.map(id => slots[id]), timings };
+    }
+
+    function recordFirstRequest() {
+        if (milestones.firstRequest) return;
+        milestones.firstRequest = nowAbs();
+        publish();
+    }
+
+    // 2) Watch for TCF consent being ready: tcloaded = stored consent, useractioncomplete = user clicked in the banner
+    function watchTcf(attempts = 0) {
+        if (typeof window.__tcfapi !== 'function') {
+            if (attempts < 300) {
+                setTimeout(() => watchTcf(attempts + 1), 50);
+            } else {
+                milestones.tcfStatus = 'no CMP';
+                publish();
+            }
+            return;
+        }
+        const hookedAt = nowAbs();
+        window.__tcfapi('addEventListener', 2, (tcData, success) => {
+            if (!success || milestones.tcfReady) return;
+            if (tcData.eventStatus === 'cmpuishown') {
+                milestones.tcfStatus = 'banner shown';
+                publish();
+            } else if (tcData.eventStatus === 'tcloaded' || tcData.eventStatus === 'useractioncomplete') {
+                milestones.tcfReady = nowAbs();
+                // Fired straight after we hooked in: consent was already ready, so the real time is earlier
+                milestones.tcfApprox = milestones.tcfReady - hookedAt < 20;
+                milestones.tcfStatus = tcData.gdprApplies === false ? 'GDPR n/a'
+                    : tcData.eventStatus === 'tcloaded' ? 'stored consent' : 'user clicked';
+                publish();
+            }
+        });
+    }
+    watchTcf();
 
     // Clear global bidder tracking each load
     window.allBidders = new Set();
 
-    // 1) Ensure pbjs is available
+    // 3) Ensure pbjs is available
     function waitForPbjs() {
         if (!window.pbjs) {
             console.log("Attila: pbjs not ready, retry in 500ms.");
@@ -22,15 +93,15 @@
     }
     waitForPbjs();
 
-    // 2) Ensure GPT is available
+    // 4) Ensure GPT is available (fallback in case the page replaces our googletag.cmd queue)
     function waitForGPT(callback) {
         let attempts = 0;
-        const maxAttempts = 30;
+        const maxAttempts = 60;
         const interval = 500;
         const checker = setInterval(() => {
             if (window.googletag && window.googletag.pubadsReady) {
                 clearInterval(checker);
-                callback(window.googletag.pubads().getSlots());
+                callback();
             } else {
                 console.log(`Attila: googletag not ready, retry in ${interval}ms (Attempt ${++attempts}).`);
                 if (attempts >= maxAttempts) clearInterval(checker);
@@ -38,205 +109,116 @@
         }, interval);
     }
 
-    // 3) Update a slot’s status cell
-    function updateSlotStatus(slotId, state, hasHB = false, hasTAM = false) {
-        const elem = document.getElementById(`${slotId}-${state}`);
-        if (!elem) return;
-        elem.classList.remove("refreshed");
-        elem.classList.add("activated");
-        if (state === "fetched") {
-            elem.innerText = hasHB && hasTAM ? 'HB+TAM' : hasHB ? 'HB' : hasTAM ? 'TAM' : 'Yes';
-        } else {
-            elem.innerText = "Yes";
-        }
+    // 5) Slot bookkeeping
+    function formatSizes(slot) {
+        return slot.getSizes().map(s => typeof s === 'string' ? s : `${s.getWidth()}x${s.getHeight()}`).join(', ');
     }
 
-    // Track known slots
-    const knownSlotIds = new Set();
+    function ensureSlot(slot) {
+        const id = slot.getSlotElementId();
+        if (!slots[id]) {
+            slots[id] = { id, sizes: formatSizes(slot), bidders: [], winner: null, creativeId: null, status: {} };
+            slotOrder.push(id);
+        }
+        return slots[id];
+    }
 
-    // 4) Log slots in console
+    function setStatus(slot, stage, text = 'Yes') {
+        ensureSlot(slot).status[stage] = text;
+        publish();
+    }
+
     function logAllSlotsTable() {
         const all = window.googletag.pubads().getSlots();
-        const info = all.map(slot => ({
-            slotId: slot.getSlotElementId(),
-            sizes: slot.getSizes().map(s => `${s.getWidth()}x${s.getHeight()}`).join(", ")
-        }));
+        const info = all.map(slot => ({ slotId: slot.getSlotElementId(), sizes: formatSizes(slot) }));
         console.log("=== Current GPT Slots ===");
         console.table(info);
     }
 
-    // 5) Create a table row
-    function createTableRow(slot) {
-        const id = slot.getSlotElementId();
-        const sizes = slot.getSizes().map(s => `${s.getWidth()}x${s.getHeight()}`).join(', ');
-        return `
-      <tr>
-        <td><button id="${id}-jumpButton" data-slotid="${id}">to slot</button></td>    
-        <td class="slot-size" id="${id}-slotNameCell">${id}</td>
-        <td class="slot-name">${sizes}</td>
-        <td id="${id}-bidders">None</td>
-        <td id="${id}-fetched">No</td>
-        <td id="${id}-ad_response">No</td>
-        <td id="${id}-rendering">No</td>
-        <td id="${id}-rendered">No</td>
-        <td id="${id}-viewed">No</td>
-        <td id="${id}-fetchTime">–</td>
-      </tr>`;
+    // Pick up slots that are defined but not requested yet (lazy-loaded, infinite scroll)
+    function syncSlots() {
+        const before = slotOrder.length;
+        window.googletag.pubads().getSlots().forEach(ensureSlot);
+        if (slotOrder.length !== before) {
+            logAllSlotsTable();
+            publish();
+        }
     }
 
-    // 6) Jump-to-slot listener
-    function attachJumpListener(id) {
-        const btn = document.getElementById(`${id}-jumpButton`);
-        if (!btn) return;
-        btn.addEventListener('click', () => {
-            const el = document.getElementById(id);
-            if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'end' });
-                el.classList.add('slot-highlight');
-                setTimeout(() => el.classList.remove('slot-highlight'), 3000);
-            } else {
-                console.warn("No DOM element with ID:", id);
-            }
-        });
-    }
+    // 6) GPT listeners
+    let listenersAttached = false;
+    function attachGptListeners() {
+        if (listenersAttached) return;
+        listenersAttached = true;
+        gptLoaded = true;
+        console.log('Attila: GPT listeners attached');
+        const pubads = window.googletag.pubads();
 
-    // 7) Build initial floating table
-    function buildInitialTable(slots) {
-        const rows = slots.map(s => {
-            const id = s.getSlotElementId();
-            knownSlotIds.add(id);
-            return createTableRow(s);
-        }).join('');
-        logAllSlotsTable();
-
-        const style = `
-      <style>
-        .status-panel { color: lightgreen; position: fixed; width: 100%; max-height: 50%; left: 0; right: 0; top: 0; background: rgba(0,0,0,0.8); z-index: 1000; cursor: pointer; padding: 10px; overflow-y: auto; }
-        .status-panel.collapsed { height: 40px; overflow: hidden; }
-        .status-panel th, .status-panel td { padding: 6px; text-align: center; white-space: nowrap; }
-        .status-panel th { background: #444; color: white; }
-        .status-panel td.activated { background-color: blue !important; color: white; }
-        .status-panel td.refreshed { background-color: yellow !important; color: black; }
-        .status-panel td.slow { background-color: orange !important; color: black; }
-        .status-panel td:not(.slot-name):not(.slot-size) { background-color: red; }
-        .slot-highlight { outline: 3px solid red; transition: outline 0.3s ease-in-out; }
-      </style>`;
-
-        const panel = `
-      <div class="status-panel">
-        <button onclick="togglePanel()">Toggle</button>
-        <table>
-          <thead>
-            <tr>
-              <th>jump</th><th>Ad Slot</th><th>Slot Size</th><th>Bidder</th><th>Fetched?</th><th>Responded?</th><th>Rendering?</th><th>Rendered?</th><th>Viewed?</th><th>Fetch Time (ms)</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-
-        document.body.insertAdjacentHTML('beforebegin', style + panel);
-        window.togglePanel = () => document.querySelector('.status-panel').classList.toggle('collapsed');
-        slots.forEach(s => attachJumpListener(s.getSlotElementId()));
-    }
-
-    // 8) Watch for new slots
-    function watchForNewSlots() {
-        setTimeout(() => {
-            const slots = window.googletag.pubads().getSlots();
-            let added = false;
-            slots.forEach(s => {
-                const id = s.getSlotElementId();
-                if (!knownSlotIds.has(id)) {
-                    knownSlotIds.add(id);
-                    const tbody = document.querySelector('.status-panel table tbody');
-                    if (tbody) {
-                        tbody.insertAdjacentHTML('beforeend', createTableRow(s));
-                        attachJumpListener(id);
-                        added = true;
-                    }
-                }
-            });
-            if (added) logAllSlotsTable();
-            watchForNewSlots();
-        }, 2000);
-    }
-
-    // 9) Handle refreshed
-    function slotRefreshed(id) {
-        ['fetched', 'ad_response', 'rendering', 'rendered', 'viewed'].forEach(state => {
-            const el = document.getElementById(`${id}-${state}`);
-            if (el) {
-                el.classList.remove("activated", "slow");
-                el.classList.add("refreshed");
-                el.innerText = "Refreshed";
-            }
-        });
-    }
-
-    // 10) Initialize GPT listeners
-    waitForGPT(slots => {
-        console.log(`Attila: Slots initialized (${slots.length} found)`);
-        gptInitAbsolute = Date.now();
-        gptInitRelative = Math.round(gptInitAbsolute - pageLoadOrigin);
-        buildInitialTable(slots);
-        watchForNewSlots();
-
-        const firstFetch = {};
-        window.googletag.pubads().addEventListener('slotRequested', event => {
-            const id = event.slot.getSlotElementId();
-            const now = Date.now();
-            if (!firstFetch[id]) {
-                firstFetch[id] = true;
-                const fetchRel = Math.round(now - gptInitAbsolute);
-                const totalRel = Math.round(now - pageLoadOrigin);
-                const cell = document.getElementById(`${id}-fetchTime`);
-                if (cell) cell.innerText = `${gptInitRelative} + ${fetchRel} = ${totalRel}`;
-            }
-            if (document.getElementById(`${id}-fetched`)?.classList.contains('activated')) {
-                slotRefreshed(id);
-            }
-            updateSlotStatus(id, 'fetched');
+        pubads.addEventListener('slotRequested', event => {
+            recordFirstRequest();
+            const s = ensureSlot(event.slot);
+            if (s.status.fetched) STAGES.forEach(stage => { s.status[stage] = 'Refreshed'; });
+            setStatus(event.slot, 'fetched');
         });
 
-        window.googletag.pubads().addEventListener('slotRenderEnded', event => {
-            const id = event.slot.getSlotElementId();
-            updateSlotStatus(id, 'rendering');
-            const cid = event.creativeId;
-            if (cid) {
-                const cell = document.getElementById(`${id}-slotNameCell`);
-                if (cell) cell.innerHTML = `<a href="https://admanager.google.com/71347885#creatives/creative/detail/creative_id=${cid}" target="_blank" style="color:yellow;">${id}</a>`;
-            }
-        });
-
-        window.googletag.pubads().addEventListener('slotResponseReceived', event => {
-            const id = event.slot.getSlotElementId();
-            const hasHB = event.slot.getTargetingKeys().includes('hb_pb');
-            const hasTAM = event.slot.getTargetingKeys().includes('amznbid');
-            let highestCpm = 0, highestBidder = null;
-            let disp = 'None';
+        pubads.addEventListener('slotResponseReceived', event => {
+            const s = ensureSlot(event.slot);
+            const keys = event.slot.getTargetingKeys();
+            const hasHB = keys.includes('hb_pb');
+            const hasTAM = keys.includes('amznbid');
+            let highestCpm = 0;
+            s.bidders = [];
+            s.winner = null;
             if (window.pbjs) {
-                const resp = pbjs.getBidResponsesForAdUnitCode(id);
-                if (resp?.bids?.length) {
-                    const order = [];
-                    resp.bids.forEach(b => {
-                        if (b.cpm > highestCpm) { highestCpm = b.cpm; highestBidder = b.bidder; }
-                        if (!order.includes(b.bidder)) order.push(b.bidder);
-                        window.allBidders.add(b.bidder);
-                    });
-                    disp = order.map(n => n === highestBidder ? `<span style="color:yellow;">${n}</span>` : n).join(', ');
-                }
+                const resp = pbjs.getBidResponsesForAdUnitCode(s.id);
+                (resp?.bids || []).forEach(b => {
+                    if (b.cpm > highestCpm) { highestCpm = b.cpm; s.winner = b.bidder; }
+                    if (!s.bidders.includes(b.bidder)) s.bidders.push(b.bidder);
+                    window.allBidders.add(b.bidder);
+                });
             }
-            document.getElementById(`${id}-bidders`).innerHTML = disp;
-            updateSlotStatus(id, 'fetched', hasHB, hasTAM);
-            updateSlotStatus(id, 'ad_response');
+            setStatus(event.slot, 'fetched', hasHB && hasTAM ? 'HB+TAM' : hasHB ? 'HB' : hasTAM ? 'TAM' : 'Yes');
+            setStatus(event.slot, 'ad_response');
         });
 
-        window.googletag.pubads().addEventListener('slotOnload', event =>
-            updateSlotStatus(event.slot.getSlotElementId(), 'rendered')
-        );
-        window.googletag.pubads().addEventListener('impressionViewable', event =>
-            updateSlotStatus(event.slot.getSlotElementId(), 'viewed')
-        );
+        pubads.addEventListener('slotRenderEnded', event => {
+            ensureSlot(event.slot).creativeId = event.creativeId || null;
+            setStatus(event.slot, 'rendering');
+        });
+
+        pubads.addEventListener('slotOnload', event => setStatus(event.slot, 'rendered'));
+        pubads.addEventListener('impressionViewable', event => setStatus(event.slot, 'viewed'));
+
+        syncSlots();
+        setInterval(syncSlots, 2000);
+    }
+
+    // cmd runs as soon as GPT loads, before any ad request, so the first request is never missed
+    window.googletag = window.googletag || { cmd: [] };
+    window.googletag.cmd.push(attachGptListeners);
+    waitForGPT(attachGptListeners);
+
+    // 7) Jump to a slot: scroll it into view and outline it for 3s
+    function jump(id) {
+        const el = document.getElementById(id);
+        if (!el) {
+            console.warn("No DOM element with ID:", id);
+            return;
+        }
+        el.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        const previousOutline = el.style.outline;
+        el.style.outline = '3px solid red';
+        setTimeout(() => { el.style.outline = previousOutline; }, 3000);
+    }
+
+    // Requests from the overlay, side panel and window (relayed by content.js)
+    window.addEventListener('message', event => {
+        if (event.source !== window || event.data?.source !== 'idnml-panel' || event.data.type !== 'jump') return;
+        jump(event.data.id);
     });
+
+    // The DevTools tab reads and drives the monitor through this
+    window.__idnmlMonitor = { snapshot, jump };
+
+    publish();
 })();

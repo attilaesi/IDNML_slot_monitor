@@ -3,36 +3,59 @@
   "name": "IDNML Slot Monitor",
   "version": "3.0",
   "description": "Monitors Google Publisher Tag ad slots on a webpage.",
-  "permissions": ["scripting", "activeTab", "storage"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "scripting",
+    "activeTab",
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
+    "default_title": "IDNML Slot Monitor",
     "default_popup": "popup.html",
     "default_icon": "icon.png"
   },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "devtools_page": "devtools.html",
   "content_scripts": [
     {
-       "matches": [
-      "https://www.independent.co.uk/*",
-      "https://www.standard.co.uk/*",
-      "https://www.buzzfeed.com/uk/*",
-      "https://www.huffingtonpost.co.uk/*",
-      "https://*.brightsites.co.uk/*",
-      "https://*.independent.co.uk/*",
-      "https://*.the-independent.com/*",
-      "https://www.indy100.com/*",
-      "https://www.buzzfeed.com/*",
-      "https://stage.buzzfeed.com/*",
-      "https://staging.www.huffpost.com/*"],
-      "js": ["content.js"]
+      "matches": [
+        "https://www.independent.co.uk/*",
+        "https://www.standard.co.uk/*",
+        "https://www.buzzfeed.com/uk/*",
+        "https://www.huffingtonpost.co.uk/*",
+        "https://*.brightsites.co.uk/*",
+        "https://*.independent.co.uk/*",
+        "https://*.the-independent.com/*",
+        "https://www.indy100.com/*",
+        "https://www.buzzfeed.com/*",
+        "https://stage.buzzfeed.com/*",
+        "https://staging.www.huffpost.com/*",
+        "http://localhost:8020/*"
+      ],
+      "js": [
+        "settings.js",
+        "view.js",
+        "content.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inject.js"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "inject.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

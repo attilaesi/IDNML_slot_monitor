@@ -1,10 +1,37 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
     <title>IDNML Slot Monitor</title>
-    <script src="popup.js"></script>
+    <style>
+        body { width: 240px; margin: 0; padding: 10px; font: 13px/1.4 system-ui, sans-serif; }
+        h1 { font-size: 14px; margin: 0 0 8px; }
+        label { display: block; padding: 3px 0; cursor: pointer; }
+        fieldset { margin: 8px 0 0; padding: 4px 8px 6px; border: 1px solid #ccc; border-radius: 4px; }
+        legend { font-weight: 600; padding: 0 4px; }
+        small { color: #777; }
+        .sub { padding-left: 22px; }
+    </style>
 </head>
 <body>
-    <button id="toggleMonitor">Enable Ad Monitor</button>
+    <h1>IDNML Slot Monitor</h1>
+    <label><input type="checkbox" id="monitorEnabled"> Monitor enabled <small>(reload page)</small></label>
+    <fieldset>
+        <legend>Show results in</legend>
+        <label><input type="checkbox" data-view="overlay"> On-page overlay</label>
+        <label class="sub">Position
+            <select id="overlayPosition">
+                <option value="top">Top</option>
+                <option value="right">Right</option>
+                <option value="bottom">Bottom</option>
+                <option value="left">Left</option>
+            </select>
+        </label>
+        <label><input type="checkbox" data-view="sidePanel"> Side panel</label>
+        <label><input type="checkbox" data-view="window"> Separate window</label>
+        <label><input type="checkbox" data-view="devtools"> DevTools tab <small>(reopen DevTools)</small></label>
+    </fieldset>
+    <script src="settings.js"></script>
+    <script src="popup.js"></script>
 </body>
 </html>
