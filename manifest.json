@@ -38,7 +38,9 @@
         "https://www.buzzfeed.com/*",
         "https://stage.buzzfeed.com/*",
         "https://staging.www.huffpost.com/*",
-        "http://localhost:8020/*"
+        "http://localhost:8020/*",
+        "https://uat-web.independentespanol.com/*",
+        "https://www.independentespanol.com/*"
       ],
       "js": [
         "settings.js",

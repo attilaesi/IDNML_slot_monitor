@@ -209,7 +209,7 @@ const MonitorView = (() => {
     }
 
     function renderRefreshSettings(settings) {
-        if (!settings) return el('div', 'message warning', 'JSGlobals.adConfig.AdSlotRules not found on this page, so no refresh rules to show');
+        if (!settings) return el('div', 'message warning', 'No refresh rules found on this page (looked in JSGlobals.adConfig.AdSlotRules and JSGlobals.adConfig)');
         const box = el('div', 'refresh-settings');
         box.append(
             el('span', 'key', 'Site refresh'), settings.refresh ? chip('on', 'on') : chip('off', 'off'),
@@ -281,14 +281,14 @@ const MonitorView = (() => {
         return row;
     }
 
-    // Name from AdSlotRules (or "not in rules"), the GAM id, and chips for the refresh flags that are set
+    // Name from the refresh rules (`key` on Standard, `name` on Independent; or "not in rules"), the GAM id, and chips for the refresh flags that are set
     function renderRuleOwner(rule, idLabel, id, flags) {
         const box = el('div');
         if (id == null) {
             box.append(el('span', 'muted', '–'));
             return box;
         }
-        box.append(rule ? line(rule.key) : line(el('span', 'muted', 'not in rules')), keyValue(idLabel, id));
+        box.append(rule ? line(rule.key ?? rule.name ?? '(unnamed)') : line(el('span', 'muted', 'not in rules')), keyValue(idLabel, id));
         if (rule) {
             const set = flags(rule).filter(Boolean);
             box.append(set.length ? line(...set) : line(el('span', 'muted', 'no refresh overrides')));

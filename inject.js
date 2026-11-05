@@ -53,14 +53,26 @@
         };
     }
 
-    // --- The site's refresh rules: JSGlobals.adConfig.AdSlotRules { settings, slots, advertisers, campaigns } ---
+    // --- The site's refresh rules: { settings, slots, advertisers, campaigns } ---
+    // Standard (and its test sites): JSGlobals.adConfig.AdSlotRules, advertiser/campaign names in `key`.
+    // Independent (and its test sites): directly on JSGlobals.adConfig, names in `name`.
+    // Picked by shape rather than hostname so test and local sites work too
 
     function adSlotRules() {
         try {
-            return window.JSGlobals?.adConfig?.AdSlotRules || null;
+            const adConfig = window.JSGlobals?.adConfig;
+            if (!adConfig) return null;
+            if (adConfig.AdSlotRules) return adConfig.AdSlotRules;
+            if (adConfig.slots || adConfig.settings) return adConfig;
+            return null;
         } catch (e) {
             return null;
         }
+    }
+
+    // Display name of an advertiser or campaign rule (Standard uses `key`, Independent uses `name`)
+    function ruleName(rule) {
+        return rule ? rule.key ?? rule.name ?? null : null;
     }
 
     // Which AdSlotRules.slots key a slot uses (e.g. mpu1). Tries the element id, the ad unit path and the
@@ -108,7 +120,7 @@
         return Object.entries(byLineItem).filter(([, ds]) => ds.length > 1).map(([lineItemId, ds]) => {
             const advertiserId = ds[0].advertiserId;
             const rule = rules?.advertisers?.[advertiserId];
-            return { lineItemId: Number(lineItemId), advertiserId, name: rule?.key || null, exempt: !!rule?.forceRefresh, slotCount: ds.length };
+            return { lineItemId: Number(lineItemId), advertiserId, name: ruleName(rule), exempt: !!rule?.forceRefresh, slotCount: ds.length };
         });
     }
 
